@@ -370,21 +370,19 @@ public class HFSize {
         }
     }
     private static void verify(String[] argc) {
-        if (argc.length < 2) {
-            throw new IllegalArgumentException(String.format("usage: %s file\n", argc[0]));
+        if (argc.length < 1) {
+            throw new IllegalArgumentException();
         }
     }
 
-    public static int main(String[] argc) throws IOException {
+    public static void main(String[] argc) throws IOException {
 
         //check arguments
         verify(argc);
 
         //read in argument
-        String path = argc[1];
+        String path = argc[0];
 
         new HFSize().hfsize(path);
-
-        return 0;
     }
 }
