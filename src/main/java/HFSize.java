@@ -19,6 +19,8 @@ import java.io.*;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.time.Instant;
+import java.time.ZoneId;
 
 public class HFSize {
 
@@ -26,10 +28,14 @@ public class HFSize {
 
     private static final int ALLOCATION_BLOCK_SIZE = 512;
 
-    //catalog and extents file  in allocation blocks
+    //catalog and extents file in allocation blocks
     private static final int BLOCKS_OVERHEAD = 24;
 
-    private static final int MAX_FILE_SIZE = (8*(END_OF_BITMAP-3) * ALLOCATION_BLOCK_SIZE - BLOCKS_OVERHEAD)* ALLOCATION_BLOCK_SIZE;
+    //add empty space for system versions that need to create a desktop file
+    private static final int FREE_BLOCKS = (8*1024)/ALLOCATION_BLOCK_SIZE;
+
+    //max file size around 2M for now
+    private static final int MAX_FILE_SIZE = (8*(END_OF_BITMAP-3) * ALLOCATION_BLOCK_SIZE - (BLOCKS_OVERHEAD +FREE_BLOCKS))* ALLOCATION_BLOCK_SIZE;
 
     private static final String SIG_BINHEX = "54 45 58 54  42 4e 48 51"; // BNHQ
 
@@ -41,13 +47,24 @@ public class HFSize {
 
     private static class FileMeta {
 
+        //difference between 1904 and 1970 epochs in seconds
+        static final long EPOCH_OFFSET = 24107 * 86400;
+
         final long logicalSize;
 
         final String originalName;
 
+        final long now;
+
         public FileMeta(String originalName, long logicalSize) {
             this.originalName = originalName;
             this.logicalSize = logicalSize;
+            // plain HFS uses local time
+            this.now = EPOCH_OFFSET + (System.currentTimeMillis()/1000) + zoneOffset();
+        }
+
+        private long zoneOffset() {
+            return ZoneId.systemDefault().getRules().getOffset(Instant.now()).getTotalSeconds();
         }
 
         public String inferSignature() {
@@ -113,20 +130,20 @@ public class HFSize {
         // first block of bitmap (starting at 0)
         writeInteger(block, 14, 3);
         //number of allocation blocks, computed from physical filesize
-        writeInteger(block, 18, (int) (BLOCKS_OVERHEAD + fileSize/ALLOCATION_BLOCK_SIZE));
+        writeInteger(block, 18, (int) ((BLOCKS_OVERHEAD + FREE_BLOCKS) + fileSize/ALLOCATION_BLOCK_SIZE));
         //allocation block size in bytes
         writeHex(block, 20, "00000200");
-        //default clump size, not really needed for a read only volume
+        //default clump size
         writeHex(block, 24, "00000800");
         //first block in bitmap, so normally this is the end of the bitmap...
         writeInteger(block, 28, END_OF_BITMAP);
-        //next unused id, not really important here
+        //next unused id
         writeLong(block, 30, 11);
         //unused allocation blocks
-        writeInteger(block, 34, 0);
+        writeInteger(block, 34, FREE_BLOCKS);
         //volume name
         writeHex(block, 36, "03 62 6f 62");
-        // clump sizes in bytes, also not really needed
+        // clump sizes in bytes
         writeLong(block, 74, 6144);
         writeLong(block, 78, 6144);
         //number of directories in root
@@ -144,8 +161,24 @@ public class HFSize {
         return block;
     }
 
-    private byte[] bitmap() {
-        return fill(new byte[512],-1);
+    private byte[] bitmap(long physicalSize) {
+
+        int blocksUsed = BLOCKS_OVERHEAD + ((int) physicalSize/ALLOCATION_BLOCK_SIZE);
+
+        int fullBytes = blocksUsed / 8;
+        int bits = blocksUsed % 8;
+
+        byte[] map = fill(new byte[512],0);
+
+        for (int ix = 0; ix < fullBytes; ix++) {
+            map[ix] = -1;
+        }
+
+        for (int ix = 0; ix < bits; ix++) {
+            map[fullBytes] |= (0x80 >> ix);
+        }
+
+        return map;
     }
 
     private byte[] extentsFile() {
@@ -201,8 +234,16 @@ public class HFSize {
         // key
         writeHex(block, 0x20E, "09 00 00000001 03 62 6f 62");
         // 70 bytes data
-        writeHex(block, 0x218, "01 00 0000 0001 00000002 630bd4cc 630bd4e9 00000000 00 00");
-        writeHex(block, 0x230, "00 00 00 00 00 00 01 00  00 70 02 48 00 00 00 00");
+        writeHex(block, 0x218, "01 00 0000 0001 00000002");
+
+        //creation
+        writeLong(block, 0x222, meta.now);
+        //modification
+        writeLong(block, 0x226, meta.now);
+        //last backup
+        writeHex(block, 0x22a, "00000000");
+
+        writeHex(block, 0x22e, "00 00 00 00 00 00 00 00 01 00  00 70 02 48 00 00 00 00");
         // following bytes are zero
 
 
@@ -251,11 +292,11 @@ public class HFSize {
         writeLong(block, 0x2CA, 0L);
 
         // creation date
-        writeHex(block, 0x2CE, "63 0b d4 e9");
+        writeLong(block, 0x2CE, meta.now);
         // modification date
-        writeHex(block, 0x2D2, "63 0b d5 1e");
+        writeLong(block, 0x2D2, meta.now);
         // backup
-        writeHex(block, 0x2D6, "00 00 00 00");
+        writeHex(block, 0x2D6, "00000000");
         // 16 bytes for finder
 
         // clump size
@@ -338,7 +379,7 @@ public class HFSize {
 
             write(s,bootBlocks());
             write(s,mdb(physicalSize));
-            write(s,bitmap());
+            write(s,bitmap(physicalSize));
             write(s,extentsFile());
             write(s,catalogFile(meta));
 
@@ -348,6 +389,10 @@ public class HFSize {
                 byte [] padding = new byte[(int) (physicalSize-logicalSize)];
                 write(s,padding);
             }
+
+            byte [] freeblocks = new byte[(int) (FREE_BLOCKS * ALLOCATION_BLOCK_SIZE)];
+            write(s,freeblocks);
+
         }
     }
 

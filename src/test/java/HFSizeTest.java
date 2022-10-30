@@ -10,6 +10,6 @@ public class HFSizeTest {
     public void image() throws IOException {
         final String payload = "file.sit";
 
-        HFSize.main(new String[] {"a,out", payload});
+        HFSize.main(new String[] {payload});
     }
 }
